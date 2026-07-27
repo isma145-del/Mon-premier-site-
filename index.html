@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Le 8h12 — Cours après ton bus</title>
+<style>
+  @font-face {
+    font-family: 'system-round';
+    src: local('Arial Rounded MT Bold');
+  }
+  :root{
+    --asphalt: #2b2b2e;
+    --asphalt-2: #201f22;
+    --bus-yellow: #ffc845;
+    --sky: #cfe8f3;
+    --accent-red: #e4572e;
+    --chalk: #f4f0e6;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; user-select:none; }
+  html,body{
+    margin:0; padding:0; height:100%; overflow:hidden;
+    background:var(--asphalt-2);
+    font-family: 'Nunito', 'Segoe UI Rounded', 'Arial Rounded MT Bold', sans-serif;
+    touch-action: manipulation;
+  }
+  #wrap{
+    position:relative; width:100%; height:100vh;
+    display:flex; align-items:center; justify-content:center;
+  }
+  canvas{
+    display:block; background:linear-gradient(#cfe8f3 0%, #cfe8f3 58%, #3a3a3f 58%, var(--asphalt) 100%);
+    width:100%; height:100%;
+    touch-action: manipulation;
+  }
+  #hud{
+    position:absolute; top:14px; left:0; right:0;
+    display:flex; justify-content:space-between; padding:0 18px;
+    color:var(--chalk); font-weight:800; font-size:20px;
+    text-shadow: 0 2px 0 rgba(0,0,0,.25);
+    pointer-events:none;
+    letter-spacing:.5px;
+  }
+  #overlay{
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center;
+    background:rgba(20,18,20,.72); color:var(--chalk); padding:24px;
+  }
+  #overlay h1{
+    font-size:clamp(28px,7vw,40px); margin:0 0 6px; color:var(--bus-yellow);
+    text-shadow: 0 3px 0 rgba(0,0,0,.4);
+  }
+  #overlay p{ margin:4px 0 18px; font-size:16px; opacity:.9; max-width:320px; }
+  .btn{
+    background:var(--accent-red); color:white; border:none;
+    padding:14px 30px; border-radius:999px; font-size:18px; font-weight:800;
+    box-shadow:0 5px 0 #a53d1f; cursor:pointer;
+  }
+  .btn:active{ transform:translateY(4px); box-shadow:0 1px 0 #a53d1f; }
+  #hint{
+    position:absolute; bottom:16px; left:0; right:0; text-align:center;
+    color:rgba(244,240,230,.7); font-size:13px; font-weight:700; pointer-events:none;
+  }
+  #flash{
+    position:absolute; top:16%; left:0; right:0; text-align:center;
+    font-size:22px; font-weight:900; color:var(--bus-yellow);
+    text-shadow:0 2px 0 rgba(0,0,0,.4); opacity:0; pointer-events:none;
+    transition:opacity .15s ease;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div id="score">0 m</div>
+    <div id="best">Record : 0 m</div>
+  </div>
+  <div id="flash"></div>
+  <div id="hint">Touche l'écran pour sauter</div>
+  <div id="overlay">
+    <h1>LE 8H12</h1>
+    <p>Cours après ton bus. Tu ne l'auras jamais. Mais on peut essayer.</p>
+    <button class="btn" id="startBtn">C'est parti</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const flashEl = document.getElementById('flash');
+const hint = document.getElementById('hint');
+
+let W, H, GROUND;
+function resize(){
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  GROUND = H * 0.58;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const GAGS_MISS = [
+  "Raté. Comme d'hab.",
+  "Le prochain est dans 12 minutes.",
+  "Le chauffeur t'a vu. Il a accéléré.",
+  "Tu recroiseras ce bus dans tes cauchemars.",
+  "Il ne s'est même pas retourné.",
+  "RATP 1 - Toi 0.",
+  "T'avais qu'à partir 5 minutes plus tôt.",
+  "Il freine pour les pigeons, pas pour toi.",
+];
+
+let best = 0;
+try { best = parseInt(localStorage.getItem('bus8h12_best') || '0', 10); } catch(e) { best = 0; }
+bestEl.textContent = "Record : " + best + " m";
+
+let state = 'menu'; // menu, playing, dead
+let speed = 6.4;
+let baseSpeed = 6.4;
+let distance = 0;
+let groundOffset = 0;
+let obstacles = [];
+let spawnTimer = 0;
+let nextSpawnIn = 60;
+let deathGag = "";
+
+const runner = {
+  x: 90, y: 0, w: 34, h: 52,
+  vy: 0, jumping:false, legPhase:0, tripTimer:0
+};
+
+function resetGame(){
+  speed = baseSpeed;
+  distance = 0;
+  obstacles = [];
+  spawnTimer = 0;
+  nextSpawnIn = 70;
+  runner.y = GROUND - runner.h;
+  runner.vy = 0;
+  runner.jumping = false;
+  runner.tripTimer = 0;
+}
+
+function jump(){
+  if(state === 'menu'){ startGame(); return; }
+  if(state === 'dead'){ startGame(); return; }
+  if(state === 'playing' && !runner.jumping){
+    runner.vy = -13.2;
+    runner.jumping = true;
+  }
+}
+
+function startGame(){
+  resetGame();
+  state = 'playing';
+  overlay.style.display = 'none';
+  hint.style.display = 'block';
+}
+
+function endGame(){
+  state = 'dead';
+  runner.tripTimer = 20;
+  const meters = Math.floor(distance);
+  if(meters > best){
+    best = meters;
+    try { localStorage.setItem('bus8h12_best', String(best)); } catch(e){}
+  }
+  deathGag = GAGS_MISS[Math.floor(Math.random()*GAGS_MISS.length)];
+  setTimeout(()=>{
+    bestEl.textContent = "Record : " + best + " m";
+    overlay.querySelector('h1').textContent = meters + " m";
+    overlay.querySelector('p').textContent = deathGag;
+    startBtn.textContent = "Réessayer";
+    overlay.style.display = 'flex';
+    hint.style.display = 'none';
+  }, 550);
+}
+
+startBtn.addEventListener('click', startGame);
+window.addEventListener('pointerdown', (e)=>{
+  if(e.target === startBtn) return;
+  jump();
+});
+window.addEventListener('keydown', (e)=>{
+  if(e.code === 'Space' || e.code === 'ArrowUp'){ jump(); }
+});
+
+// Obstacle types with quick gag labels
+const OBSTACLE_TYPES = [
+  {type:'bin', w:30, h:38, color:'#4c5b52'},
+  {type:'cone', w:24, h:34, color:'#e4572e'},
+  {type:'puddle', w:52, h:10, color:'#5aa7c9', ground:true},
+  {type:'dog', w:36, h:24, color:'#8a5a34'},
+  {type:'granny', w:30, h:48, color:'#9b6b9e'},
+];
+
+function spawnObstacle(){
+  const t = OBSTACLE_TYPES[Math.floor(Math.random()*OBSTACLE_TYPES.length)];
+  const h = t.h;
+  const y = t.ground ? GROUND - h + 6 : GROUND - h;
+  obstacles.push({...t, x: W + 40, y, passed:false});
+}
+
+// Bus in background — always just out of reach
+let busX = 0;
+let busBobPhase = 0;
+let busStopTimer = 0;
+
+function drawBus(){
+  // bus floats far right, bobs occasionally, "stops" then pulls away as you approach conceptually (visual gag only)
+  const bx = W - 170 + Math.sin(busBobPhase)*4;
+  const by = GROUND - 74;
+  ctx.save();
+  ctx.translate(bx, by);
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,.25)';
+  ctx.beginPath();
+  ctx.ellipse(60, 78, 66, 8, 0, 0, Math.PI*2);
+  ctx.fill();
+  // body
+  ctx.fillStyle = '#ffc845';
+  roundRect(ctx, 0, 0, 130, 60, 10);
+  ctx.fill();
+  // windows
+  ctx.fillStyle = '#cfe8f3';
+  roundRect(ctx, 10, 10, 26, 22, 4); ctx.fill();
+  roundRect(ctx, 42, 10, 26, 22, 4); ctx.fill();
+  roundRect(ctx, 74, 10, 26, 22, 4); ctx.fill();
+  // stripe
+  ctx.fillStyle = '#2b2b2e';
+  ctx.fillRect(0, 42, 130, 6);
+  // wheels
+  ctx.beginPath(); ctx.arc(28, 62, 10, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(102, 62, 10, 0, Math.PI*2); ctx.fill();
+  // number plate gag
+  ctx.fillStyle = '#e4572e';
+  ctx.font = 'bold 14px Nunito, sans-serif';
+  ctx.fillText('8h12', 96, 34);
+  ctx.restore();
+}
+
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function drawRunner(){
+  ctx.save();
+  ctx.translate(runner.x, runner.y);
+  if(runner.tripTimer > 0){
+    ctx.rotate(0.9);
+    ctx.translate(-10, 10);
+  }
+  // legs (simple alternating)
+  const legSwing = runner.jumping ? 0 : Math.sin(runner.legPhase)*10;
+  ctx.strokeStyle = '#2b2b2e';
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(12, 34); ctx.lineTo(12+legSwing*0.4, 52);
+  ctx.moveTo(22, 34); ctx.lineTo(22-legSwing*0.4, 52);
+  ctx.stroke();
+  // body
+  ctx.fillStyle = '#e4572e';
+  roundRect(ctx, 4, 10, 26, 26, 8); ctx.fill();
+  // head
+  ctx.fillStyle = '#f4c9a3';
+  ctx.beginPath(); ctx.arc(17, 2, 11, 0, Math.PI*2); ctx.fill();
+  // hair
+  ctx.fillStyle = '#2b2b2e';
+  ctx.beginPath(); ctx.arc(17, -4, 10, Math.PI, 0); ctx.fill();
+  // arm swing
+  ctx.strokeStyle = '#f4c9a3';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(6,16); ctx.lineTo(6 - legSwing*0.5, 30);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawObstacle(o){
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.fillStyle = o.color;
+  if(o.type === 'puddle'){
+    ctx.beginPath();
+    ctx.ellipse(o.w/2, o.h/2, o.w/2, o.h/2, 0, 0, Math.PI*2);
+    ctx.fill();
+  } else if(o.type === 'dog'){
+    roundRect(ctx, 0, 8, o.w, o.h-8, 8); ctx.fill();
+    ctx.beginPath(); ctx.arc(o.w, 8, 8, 0, Math.PI*2); ctx.fill();
+  } else if(o.type === 'granny'){
+    // trolley granny gag: body + little cart
+    ctx.fillStyle = '#9b6b9e';
+    roundRect(ctx, 6, 10, 16, 26, 6); ctx.fill();
+    ctx.beginPath(); ctx.arc(14, 4, 8, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#5aa7c9';
+    roundRect(ctx, -10, 24, 12, 16, 3); ctx.fill();
+  } else {
+    roundRect(ctx, 0, 0, o.w, o.h, 5); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function rectsOverlap(a,b){
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+let lastTime = 0;
+function loop(ts){
+  const dt = Math.min((ts - lastTime) / 16.6667, 2.2) || 1;
+  lastTime = ts;
+
+  ctx.clearRect(0,0,W,H);
+  // sky already via CSS gradient background of canvas element painted by browser each frame? Actually canvas fill needed:
+  ctx.fillStyle = '#cfe8f3';
+  ctx.fillRect(0,0,W,GROUND);
+  ctx.fillStyle = '#3a3a3f';
+  ctx.fillRect(0,GROUND,W,H-GROUND);
+  // road markings
+  ctx.fillStyle = '#54545a';
+  const stripeW = 46, gap = 34;
+  const total = stripeW+gap;
+  let off = (groundOffset % total);
+  for(let x=-off; x<W; x+=total){
+    ctx.fillRect(x, GROUND+22, stripeW, 8);
+  }
+
+  busBobPhase += 0.02*dt;
+  drawBus();
+
+  if(state === 'playing'){
+    distance += speed*dt*0.05;
+    speed = baseSpeed + Math.min(distance*0.012, 6.5);
+    groundOffset += speed*dt;
+    runner.legPhase += 0.35*dt*(speed/baseSpeed);
+
+    // physics
+    runner.vy += 0.72*dt;
+    runner.y += runner.vy*dt;
+    if(runner.y > GROUND - runner.h){
+      runner.y = GROUND - runner.h;
+      runner.vy = 0;
+      runner.jumping = false;
+    }
+
+    // spawn
+    spawnTimer += dt;
+    if(spawnTimer >= nextSpawnIn){
+      spawnTimer = 0;
+      nextSpawnIn = Math.max(38, 75 - speed*3) + Math.random()*30;
+      spawnObstacle();
+    }
+
+    for(let i=obstacles.length-1;i>=0;i--){
+      const o = obstacles[i];
+      o.x -= speed*dt;
+      if(o.x < -80) obstacles.splice(i,1);
+    }
+
+    const rBox = {x:runner.x+4, y:runner.y+8, w:runner.w-10, h:runner.h-8};
+    for(const o of obstacles){
+      const oBox = {x:o.x, y:o.y, w:o.w, h:o.h};
+      if(rectsOverlap(rBox, oBox)){
+        endGame();
+        break;
+      }
+    }
+
+    scoreEl.textContent = Math.floor(distance) + " m";
+  }
+
+  for(const o of obstacles) drawObstacle(o);
+  drawRunner();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

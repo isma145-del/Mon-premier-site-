@@ -16,6 +16,7 @@
     --sky: #cfe8f3;
     --accent-red: #e4572e;
     --chalk: #f4f0e6;
+    --coin-gold: #ffd23f;
   }
   *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; user-select:none; }
   html,body{
@@ -35,11 +36,15 @@
   }
   #hud{
     position:absolute; top:14px; left:0; right:0;
-    display:flex; justify-content:space-between; padding:0 18px;
+    display:flex; justify-content:space-between; align-items:center; padding:0 18px;
     color:var(--chalk); font-weight:800; font-size:20px;
     text-shadow: 0 2px 0 rgba(0,0,0,.25);
     pointer-events:none;
     letter-spacing:.5px;
+  }
+  #coins{
+    font-size:15px; color:var(--coin-gold);
+    background:rgba(0,0,0,.28); padding:4px 12px; border-radius:999px;
   }
   #overlay{
     position:absolute; inset:0; display:flex; flex-direction:column;
@@ -50,7 +55,8 @@
     font-size:clamp(28px,7vw,40px); margin:0 0 6px; color:var(--bus-yellow);
     text-shadow: 0 3px 0 rgba(0,0,0,.4);
   }
-  #overlay p{ margin:4px 0 18px; font-size:16px; opacity:.9; max-width:320px; }
+  #overlay p{ margin:4px 0 4px; font-size:16px; opacity:.9; max-width:320px; }
+  #overlay .sub{ font-size:14px; opacity:.75; margin-bottom:18px; color:var(--coin-gold); font-weight:800; }
   .btn{
     background:var(--accent-red); color:white; border:none;
     padding:14px 30px; border-radius:999px; font-size:18px; font-weight:800;
@@ -63,9 +69,9 @@
   }
   #flash{
     position:absolute; top:16%; left:0; right:0; text-align:center;
-    font-size:22px; font-weight:900; color:var(--bus-yellow);
+    font-size:26px; font-weight:900; color:var(--bus-yellow);
     text-shadow:0 2px 0 rgba(0,0,0,.4); opacity:0; pointer-events:none;
-    transition:opacity .15s ease;
+    transition:opacity .18s ease;
   }
 </style>
 </head>
@@ -74,10 +80,11 @@
   <canvas id="game"></canvas>
   <div id="hud">
     <div id="score">0 m</div>
+    <div id="coins">Pièces : 0</div>
     <div id="best">Record : 0 m</div>
   </div>
   <div id="flash"></div>
-  <div id="hint">Touche l'écran pour sauter</div>
+  <div id="hint">Touche pour sauter · Glisse vers le bas pour te baisser</div>
   <div id="overlay">
     <h1>LE 8H12</h1>
     <p>Cours après ton bus. Tu ne l'auras jamais. Mais on peut essayer.</p>
@@ -92,6 +99,7 @@ const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('startBtn');
 const scoreEl = document.getElementById('score');
 const bestEl = document.getElementById('best');
+const coinsEl = document.getElementById('coins');
 const flashEl = document.getElementById('flash');
 const hint = document.getElementById('hint');
 
@@ -113,45 +121,79 @@ const GAGS_MISS = [
   "RATP 1 - Toi 0.",
   "T'avais qu'à partir 5 minutes plus tôt.",
   "Il freine pour les pigeons, pas pour toi.",
+  "T'as même pas ramassé tes pièces pour le ticket.",
+  "Prochain arrêt : le sol.",
 ];
 
-let best = 0;
+let best = 0, bestCoins = 0;
 try { best = parseInt(localStorage.getItem('bus8h12_best') || '0', 10); } catch(e) { best = 0; }
+try { bestCoins = parseInt(localStorage.getItem('bus8h12_bestCoins') || '0', 10); } catch(e) { bestCoins = 0; }
 bestEl.textContent = "Record : " + best + " m";
 
 let state = 'menu'; // menu, playing, dead
-let speed = 6.4;
-let baseSpeed = 6.4;
+let baseSpeed = 5.0;
+let speed = baseSpeed;
 let distance = 0;
 let groundOffset = 0;
+let buildingOffset = 0;
 let obstacles = [];
+let coins = [];
+let particles = [];
 let spawnTimer = 0;
-let nextSpawnIn = 60;
+let nextSpawnIn = 90;
+let coinTimer = 0;
+let nextCoinIn = 110;
+let coinCount = 0;
 let deathGag = "";
+let shakeTimer = 0, shakeMag = 0;
+
+const DUCK_H = 26;
+const NORMAL_H = 52;
 
 const runner = {
-  x: 90, y: 0, w: 34, h: 52,
-  vy: 0, jumping:false, legPhase:0, tripTimer:0
+  x: 90, y: 0, w: 34, h: NORMAL_H,
+  vy: 0, jumping:false, ducking:false, duckTimer:0, legPhase:0, tripTimer:0
 };
 
 function resetGame(){
   speed = baseSpeed;
   distance = 0;
   obstacles = [];
+  coins = [];
+  particles = [];
   spawnTimer = 0;
-  nextSpawnIn = 70;
+  nextSpawnIn = 90;
+  coinTimer = 0;
+  nextCoinIn = 110;
+  coinCount = 0;
+  shakeTimer = 0;
+  runner.h = NORMAL_H;
   runner.y = GROUND - runner.h;
   runner.vy = 0;
   runner.jumping = false;
+  runner.ducking = false;
+  runner.duckTimer = 0;
   runner.tripTimer = 0;
+  coinsEl.textContent = "Pièces : 0";
 }
 
 function jump(){
   if(state === 'menu'){ startGame(); return; }
   if(state === 'dead'){ startGame(); return; }
-  if(state === 'playing' && !runner.jumping){
+  if(state === 'playing' && !runner.jumping && !runner.ducking){
     runner.vy = -13.2;
     runner.jumping = true;
+    spawnDust(runner.x + runner.w/2, GROUND, 5);
+  }
+}
+
+function duck(){
+  if(state === 'menu'){ startGame(); return; }
+  if(state === 'dead'){ startGame(); return; }
+  if(state === 'playing' && !runner.jumping && !runner.ducking){
+    runner.ducking = true;
+    runner.duckTimer = 34;
+    spawnDust(runner.x + runner.w/2, GROUND, 4);
   }
 }
 
@@ -162,19 +204,41 @@ function startGame(){
   hint.style.display = 'block';
 }
 
+function showFlash(text){
+  flashEl.textContent = text;
+  flashEl.style.opacity = 1;
+  clearTimeout(flashEl._t);
+  flashEl._t = setTimeout(()=>{ flashEl.style.opacity = 0; }, 280);
+}
+
 function endGame(){
   state = 'dead';
   runner.tripTimer = 20;
+  shakeTimer = 18; shakeMag = 11;
+  const hitWords = ["AÏE !", "PAF !", "BOUM !", "CRAC !"];
+  showFlash(hitWords[Math.floor(Math.random()*hitWords.length)]);
   const meters = Math.floor(distance);
   if(meters > best){
     best = meters;
     try { localStorage.setItem('bus8h12_best', String(best)); } catch(e){}
   }
+  if(coinCount > bestCoins){
+    bestCoins = coinCount;
+    try { localStorage.setItem('bus8h12_bestCoins', String(bestCoins)); } catch(e){}
+  }
   deathGag = GAGS_MISS[Math.floor(Math.random()*GAGS_MISS.length)];
   setTimeout(()=>{
     bestEl.textContent = "Record : " + best + " m";
+    coinsEl.textContent = "Pièces : " + coinCount;
     overlay.querySelector('h1').textContent = meters + " m";
     overlay.querySelector('p').textContent = deathGag;
+    let sub = overlay.querySelector('.sub');
+    if(!sub){
+      sub = document.createElement('div');
+      sub.className = 'sub';
+      overlay.querySelector('p').after(sub);
+    }
+    sub.textContent = coinCount + " pièces ramassées" + (coinCount >= bestCoins && coinCount > 0 ? " — record !" : "") + " · Meilleur : " + bestCoins;
     startBtn.textContent = "Réessayer";
     overlay.style.display = 'flex';
     hint.style.display = 'none';
@@ -182,12 +246,28 @@ function endGame(){
 }
 
 startBtn.addEventListener('click', startGame);
+
+let pointerStart = null;
 window.addEventListener('pointerdown', (e)=>{
   if(e.target === startBtn) return;
-  jump();
+  pointerStart = { x:e.clientX, y:e.clientY, t:performance.now() };
+  if(state !== 'playing'){ jump(); pointerStart = null; }
+});
+window.addEventListener('pointerup', (e)=>{
+  if(!pointerStart) return;
+  const dx = e.clientX - pointerStart.x;
+  const dy = e.clientY - pointerStart.y;
+  const dt = performance.now() - pointerStart.t;
+  pointerStart = null;
+  if(dy > 40 && Math.abs(dy) > Math.abs(dx) && dt < 500){
+    duck();
+  } else {
+    jump();
+  }
 });
 window.addEventListener('keydown', (e)=>{
-  if(e.code === 'Space' || e.code === 'ArrowUp'){ jump(); }
+  if(e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW'){ jump(); }
+  if(e.code === 'ArrowDown' || e.code === 'KeyS'){ duck(); }
 });
 
 // Obstacle types with quick gag labels
@@ -197,47 +277,67 @@ const OBSTACLE_TYPES = [
   {type:'puddle', w:52, h:10, color:'#5aa7c9', ground:true},
   {type:'dog', w:36, h:24, color:'#8a5a34'},
   {type:'granny', w:30, h:48, color:'#9b6b9e'},
+  {type:'bar', w:76, h:40, color:'#3a3a3f', overhead:true},
+  {type:'bar', w:76, h:40, color:'#3a3a3f', overhead:true},
 ];
 
 function spawnObstacle(){
   const t = OBSTACLE_TYPES[Math.floor(Math.random()*OBSTACLE_TYPES.length)];
-  const h = t.h;
-  const y = t.ground ? GROUND - h + 6 : GROUND - h;
+  let y;
+  if(t.overhead){
+    y = GROUND - 74;
+  } else if(t.ground){
+    y = GROUND - t.h + 6;
+  } else {
+    y = GROUND - t.h;
+  }
   obstacles.push({...t, x: W + 40, y, passed:false});
 }
 
+function spawnCoinRow(){
+  const lowArc = Math.random() < 0.4;
+  const count = 3 + Math.floor(Math.random()*3);
+  const baseY = lowArc ? GROUND - DUCK_H/2 - 4 : GROUND - 95 - Math.random()*35;
+  for(let i=0;i<count;i++){
+    const arc = Math.sin((i/(count-1||1)) * Math.PI) * 26;
+    coins.push({ x: W + 60 + i*32, y: baseY - (lowArc?0:arc), r:8, collected:false });
+  }
+}
+
+function spawnDust(x,y,count){
+  for(let i=0;i<count;i++){
+    particles.push({
+      x, y,
+      vx:(Math.random()-0.5)*3,
+      vy:-Math.random()*1.8-0.3,
+      life:22+Math.random()*10, maxLife:32
+    });
+  }
+}
+
 // Bus in background — always just out of reach
-let busX = 0;
 let busBobPhase = 0;
-let busStopTimer = 0;
 
 function drawBus(){
-  // bus floats far right, bobs occasionally, "stops" then pulls away as you approach conceptually (visual gag only)
   const bx = W - 170 + Math.sin(busBobPhase)*4;
   const by = GROUND - 74;
   ctx.save();
   ctx.translate(bx, by);
-  // shadow
   ctx.fillStyle = 'rgba(0,0,0,.25)';
   ctx.beginPath();
   ctx.ellipse(60, 78, 66, 8, 0, 0, Math.PI*2);
   ctx.fill();
-  // body
   ctx.fillStyle = '#ffc845';
   roundRect(ctx, 0, 0, 130, 60, 10);
   ctx.fill();
-  // windows
   ctx.fillStyle = '#cfe8f3';
   roundRect(ctx, 10, 10, 26, 22, 4); ctx.fill();
   roundRect(ctx, 42, 10, 26, 22, 4); ctx.fill();
   roundRect(ctx, 74, 10, 26, 22, 4); ctx.fill();
-  // stripe
   ctx.fillStyle = '#2b2b2e';
   ctx.fillRect(0, 42, 130, 6);
-  // wheels
   ctx.beginPath(); ctx.arc(28, 62, 10, 0, Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(102, 62, 10, 0, Math.PI*2); ctx.fill();
-  // number plate gag
   ctx.fillStyle = '#e4572e';
   ctx.font = 'bold 14px Nunito, sans-serif';
   ctx.fillText('8h12', 96, 34);
@@ -254,12 +354,51 @@ function roundRect(ctx,x,y,w,h,r){
   ctx.closePath();
 }
 
+function seededHeight(i){
+  const s = Math.sin(i*12.9898) * 43758.5453;
+  return 50 + (s - Math.floor(s)) * 110;
+}
+
+function drawBuildings(){
+  const bw = 90, gap = 40, total = bw + gap;
+  let off = buildingOffset % total;
+  ctx.fillStyle = 'rgba(58,58,63,0.30)';
+  for(let x = -off - total; x < W + total; x += total){
+    const idx = Math.round((x + off) / total);
+    const h = seededHeight(idx);
+    ctx.fillRect(x, GROUND - h, bw, h);
+    ctx.fillStyle = 'rgba(207,232,243,0.18)';
+    for(let wy = GROUND - h + 10; wy < GROUND - 12; wy += 18){
+      ctx.fillRect(x + 10, wy, 12, 10);
+      ctx.fillRect(x + 40, wy, 12, 10);
+    }
+    ctx.fillStyle = 'rgba(58,58,63,0.30)';
+  }
+}
+
 function drawRunner(){
   ctx.save();
   ctx.translate(runner.x, runner.y);
   if(runner.tripTimer > 0){
     ctx.rotate(0.9);
     ctx.translate(-10, 10);
+  }
+  if(runner.ducking){
+    // crouched pose
+    ctx.fillStyle = '#e4572e';
+    roundRect(ctx, 2, runner.h-22, 30, 20, 8); ctx.fill();
+    ctx.fillStyle = '#f4c9a3';
+    ctx.beginPath(); ctx.arc(30, runner.h-16, 9, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#2b2b2e';
+    ctx.beginPath(); ctx.arc(28, runner.h-20, 8, Math.PI, 0); ctx.fill();
+    ctx.strokeStyle = '#2b2b2e';
+    ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(8, runner.h-2); ctx.lineTo(4, runner.h+2);
+    ctx.moveTo(20, runner.h-2); ctx.lineTo(24, runner.h+2);
+    ctx.stroke();
+    ctx.restore();
+    return;
   }
   // legs (simple alternating)
   const legSwing = runner.jumping ? 0 : Math.sin(runner.legPhase)*10;
@@ -276,9 +415,10 @@ function drawRunner(){
   // head
   ctx.fillStyle = '#f4c9a3';
   ctx.beginPath(); ctx.arc(17, 2, 11, 0, Math.PI*2); ctx.fill();
-  // hair
+  // cap
   ctx.fillStyle = '#2b2b2e';
   ctx.beginPath(); ctx.arc(17, -4, 10, Math.PI, 0); ctx.fill();
+  ctx.fillRect(15, -4, 14, 4);
   // arm swing
   ctx.strokeStyle = '#f4c9a3';
   ctx.lineWidth = 5;
@@ -300,16 +440,52 @@ function drawObstacle(o){
     roundRect(ctx, 0, 8, o.w, o.h-8, 8); ctx.fill();
     ctx.beginPath(); ctx.arc(o.w, 8, 8, 0, Math.PI*2); ctx.fill();
   } else if(o.type === 'granny'){
-    // trolley granny gag: body + little cart
     ctx.fillStyle = '#9b6b9e';
     roundRect(ctx, 6, 10, 16, 26, 6); ctx.fill();
     ctx.beginPath(); ctx.arc(14, 4, 8, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = '#5aa7c9';
     roundRect(ctx, -10, 24, 12, 16, 3); ctx.fill();
+  } else if(o.type === 'bar'){
+    roundRect(ctx, 0, 0, o.w, o.h, 6); ctx.fill();
+    ctx.fillStyle = 'rgba(255,200,60,0.85)';
+    for(let sx=-10; sx<o.w; sx+=18){
+      ctx.beginPath();
+      ctx.moveTo(sx, o.h);
+      ctx.lineTo(sx+9, 0);
+      ctx.lineTo(sx+14, 0);
+      ctx.lineTo(sx+5, o.h);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = '#1c1c1e';
+    ctx.fillRect(-4, o.h-6, o.w+8, 6);
   } else {
     roundRect(ctx, 0, 0, o.w, o.h, 5); ctx.fill();
   }
   ctx.restore();
+}
+
+function drawCoin(c){
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.fillStyle = '#ffd23f';
+  ctx.beginPath(); ctx.arc(0,0,c.r,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#c9941f';
+  ctx.beginPath(); ctx.arc(0,0,c.r*0.55,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.beginPath(); ctx.arc(-c.r*0.3,-c.r*0.3,c.r*0.25,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha = Math.max(p.life / p.maxLife, 0);
+    ctx.fillStyle = '#f4f0e6';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.4, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function rectsOverlap(a,b){
@@ -321,13 +497,21 @@ function loop(ts){
   const dt = Math.min((ts - lastTime) / 16.6667, 2.2) || 1;
   lastTime = ts;
 
-  ctx.clearRect(0,0,W,H);
-  // sky already via CSS gradient background of canvas element painted by browser each frame? Actually canvas fill needed:
+  ctx.save();
+  if(shakeTimer > 0){
+    ctx.translate((Math.random()-0.5)*shakeMag, (Math.random()-0.5)*shakeMag);
+    shakeTimer -= dt;
+    shakeMag *= 0.9;
+  }
+
+  ctx.clearRect(-20,-20,W+40,H+40);
   ctx.fillStyle = '#cfe8f3';
-  ctx.fillRect(0,0,W,GROUND);
+  ctx.fillRect(-20,-20,W+40,GROUND+20);
   ctx.fillStyle = '#3a3a3f';
-  ctx.fillRect(0,GROUND,W,H-GROUND);
-  // road markings
+  ctx.fillRect(-20,GROUND,W+40,H-GROUND+20);
+
+  drawBuildings();
+
   ctx.fillStyle = '#54545a';
   const stripeW = 46, gap = 34;
   const total = stripeW+gap;
@@ -341,34 +525,71 @@ function loop(ts){
 
   if(state === 'playing'){
     distance += speed*dt*0.05;
-    speed = baseSpeed + Math.min(distance*0.012, 6.5);
+    speed = baseSpeed + 7.5 * (1 - Math.exp(-distance/450));
     groundOffset += speed*dt;
+    buildingOffset += speed*dt*0.35;
     runner.legPhase += 0.35*dt*(speed/baseSpeed);
 
     // physics
-    runner.vy += 0.72*dt;
-    runner.y += runner.vy*dt;
-    if(runner.y > GROUND - runner.h){
-      runner.y = GROUND - runner.h;
-      runner.vy = 0;
-      runner.jumping = false;
+    if(runner.jumping){
+      runner.vy += 0.72*dt;
+      runner.y += runner.vy*dt;
+      if(runner.y > GROUND - NORMAL_H){
+        runner.y = GROUND - NORMAL_H;
+        runner.vy = 0;
+        runner.jumping = false;
+        spawnDust(runner.x + runner.w/2, GROUND, 5);
+      }
+    } else if(runner.ducking){
+      runner.duckTimer -= dt;
+      runner.h = DUCK_H;
+      if(runner.duckTimer <= 0){
+        runner.ducking = false;
+        runner.h = NORMAL_H;
+      }
+    } else {
+      runner.h = NORMAL_H;
+      runner.y = GROUND - NORMAL_H;
     }
 
-    // spawn
+    // spawn obstacles with a reaction-time-safe pixel gap
     spawnTimer += dt;
     if(spawnTimer >= nextSpawnIn){
       spawnTimer = 0;
-      nextSpawnIn = Math.max(38, 75 - speed*3) + Math.random()*30;
+      const minGapPx = 420;
+      const extraGapPx = Math.max(90, 300 - distance*0.1);
+      const pixelGap = minGapPx + Math.random()*extraGapPx;
+      nextSpawnIn = pixelGap / speed;
       spawnObstacle();
+    }
+
+    // spawn coin rows
+    coinTimer += dt;
+    if(coinTimer >= nextCoinIn){
+      coinTimer = 0;
+      nextCoinIn = 70 + Math.random()*90;
+      spawnCoinRow();
     }
 
     for(let i=obstacles.length-1;i>=0;i--){
       const o = obstacles[i];
       o.x -= speed*dt;
-      if(o.x < -80) obstacles.splice(i,1);
+      if(o.x < -100) obstacles.splice(i,1);
     }
 
-    const rBox = {x:runner.x+4, y:runner.y+8, w:runner.w-10, h:runner.h-8};
+    for(let i=coins.length-1;i>=0;i--){
+      const c = coins[i];
+      c.x -= speed*dt;
+      if(c.x < -30 || c.collected) coins.splice(i,1);
+    }
+
+    let rBox;
+    if(runner.ducking){
+      rBox = {x:runner.x+2, y:GROUND-DUCK_H, w:runner.w-6, h:DUCK_H};
+    } else {
+      rBox = {x:runner.x+4, y:runner.y+8, w:runner.w-10, h:runner.h-8};
+    }
+
     for(const o of obstacles){
       const oBox = {x:o.x, y:o.y, w:o.w, h:o.h};
       if(rectsOverlap(rBox, oBox)){
@@ -377,12 +598,37 @@ function loop(ts){
       }
     }
 
+    const rcx = runner.x + runner.w/2;
+    const rcy = runner.ducking ? GROUND - DUCK_H/2 : runner.y + runner.h/2;
+    for(const c of coins){
+      if(c.collected) continue;
+      const dx = c.x - rcx, dy = c.y - rcy;
+      if(Math.hypot(dx,dy) < 26){
+        c.collected = true;
+        coinCount++;
+        coinsEl.textContent = "Pièces : " + coinCount;
+      }
+    }
+
+    if(Math.floor(runner.legPhase*10) % 7 === 0 && !runner.jumping && !runner.ducking){
+      // occasional foot-tap dust while running
+    }
+
     scoreEl.textContent = Math.floor(distance) + " m";
   }
 
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 0.08*dt; p.life -= dt;
+    if(p.life <= 0) particles.splice(i,1);
+  }
+
+  for(const c of coins) drawCoin(c);
   for(const o of obstacles) drawObstacle(o);
+  drawParticles();
   drawRunner();
 
+  ctx.restore();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
